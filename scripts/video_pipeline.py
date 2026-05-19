@@ -22,11 +22,23 @@ def build_gst_pipeline(
     width: int = 640,
     height: int = 480,
     fps: int = 30,
+    turbo: bool = False,
 ) -> str | int:
     """Build GStreamer pipeline string for Jetson CSI camera, or return device index."""
     if isinstance(camera, str):
         if camera.lower() == "csi":
             # NVIDIA CSI camera via nvarguscamerasrc
+            # In turbo mode, use hardware-accelerated conversion
+            if turbo:
+                return (
+                    f"nvarguscamerasrc sensor-mode=0 ! "
+                    f"video/x-raw(memory:NVMM), width={width}, height={height}, "
+                    f"framerate={fps}/1, format=NV12 ! "
+                    f"nvvidconv flip-method=0 ! "
+                    f"video/x-raw, width={width}, height={height}, format=BGRx ! "
+                    f"videoconvert ! video/x-raw, format=BGR ! "
+                    f"appsink drop=1 sync=0 max-buffers=2"
+                )
             return (
                 f"nvarguscamerasrc ! "
                 f"video/x-raw(memory:NVMM), width={width}, height={height}, "
@@ -39,6 +51,15 @@ def build_gst_pipeline(
             return camera
         # Try as file path or GStreamer pipeline
         return camera
+
+    # USB camera — in turbo mode use V4L2 with tuned settings
+    if turbo:
+        return (
+            f"v4l2src device=/dev/video{camera} ! "
+            f"video/x-raw, width={width}, height={height}, framerate={fps}/1 ! "
+            f"videoconvert ! video/x-raw, format=BGR ! "
+            f"appsink drop=1 sync=0 max-buffers=2"
+        )
 
     return camera  # USB camera index
 
@@ -54,6 +75,7 @@ class VideoPipeline:
         fps: int = 30,
         fullscreen: bool = False,
         window_name: str = "jetson-dream",
+        turbo: bool = False,
     ):
         if cv2 is None:
             raise RuntimeError("OpenCV is required: pip install opencv-python")
@@ -64,6 +86,7 @@ class VideoPipeline:
         self.target_fps = fps
         self.fullscreen = fullscreen
         self.window_name = window_name
+        self.turbo = turbo
 
         self._cap = None
         self._frame_count = 0
@@ -76,7 +99,10 @@ class VideoPipeline:
 
     def start(self):
         """Open camera and create display window."""
-        source = build_gst_pipeline(self.camera, self.width, self.height, self.target_fps)
+        source = build_gst_pipeline(
+            self.camera, self.width, self.height, self.target_fps,
+            turbo=self.turbo,
+        )
 
         if isinstance(source, str) and ("!" in source or source.startswith("http")):
             # GStreamer pipeline or URL

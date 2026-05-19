@@ -166,7 +166,8 @@ class TransformNet(nn.Module):
 class StyleTransferEngine:
     """Real-time neural style transfer for video frames."""
 
-    def __init__(self, models_dir: str = "models", resolution: tuple[int, int] = (640, 480)):
+    def __init__(self, models_dir: str = "models", resolution: tuple[int, int] = (640, 480),
+                 turbo: bool = False):
         if torch is None:
             raise RuntimeError("PyTorch is required: pip install torch torchvision")
         if cv2 is None:
@@ -174,12 +175,14 @@ class StyleTransferEngine:
 
         self.models_dir = Path(models_dir)
         self.resolution = resolution
+        self.turbo = turbo
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Loaded models cache
         self._models: dict[str, TransformNet] = {}
         self._current_style = None
         self._current_model: TransformNet | None = None
+        self._turbo_engine = None  # TurboStyleEngine when turbo=True
 
         # Parameters (updated from MIDI)
         self.style_blend = 1.0        # 0 = original, 1 = fully styled
@@ -229,6 +232,24 @@ class StyleTransferEngine:
             self._current_model = model
             self._current_style = style_name
             print(f"StyleTransfer: loaded '{style_name}' from {model_path}")
+
+            # Build turbo engine if enabled
+            if self.turbo and torch.cuda.is_available():
+                try:
+                    from scripts.turbo_engine import TurboStyleEngine
+                    h = self.resolution[1] if len(self.resolution) > 1 else self.resolution[0]
+                    w = self.resolution[0]
+                    self._turbo_engine = TurboStyleEngine(
+                        model, (h, w),
+                        cache_dir=str(self.models_dir / "trt_cache"),
+                    )
+                    print(f"StyleTransfer: turbo engine ready ({self._turbo_engine.optimization_info})")
+                except Exception as e:
+                    print(f"StyleTransfer: turbo build failed ({e}), using standard FP16")
+                    self._turbo_engine = None
+                    if torch.cuda.is_available():
+                        self._current_model.half()
+
             return True
         except Exception as e:
             print(f"StyleTransfer: failed to load '{style_name}': {e}")
@@ -273,7 +294,13 @@ class StyleTransferEngine:
         # Run style transfer
         with torch.no_grad():
             input_tensor = self._preprocess(frame)
-            output_tensor = self._current_model(input_tensor)
+            if self._turbo_engine is not None:
+                output_tensor = self._turbo_engine.forward(input_tensor)
+            elif self.turbo and torch.cuda.is_available():
+                # FP16 fallback
+                output_tensor = self._current_model(input_tensor.half()).float()
+            else:
+                output_tensor = self._current_model(input_tensor)
             styled = self._postprocess(output_tensor)
 
         # Blend original with styled

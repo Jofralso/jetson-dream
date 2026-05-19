@@ -71,6 +71,7 @@ echo ""
 echo "[4/4] Style transfer models..."
 MODELS_DIR="$(dirname "$0")/../models"
 mkdir -p "$MODELS_DIR"
+mkdir -p "$MODELS_DIR/trt_cache"
 
 echo "  Style models directory: $MODELS_DIR"
 echo ""
@@ -79,6 +80,40 @@ echo "    python3 scripts/download_styles.py"
 echo ""
 echo "  Or manually place .pth files in $MODELS_DIR/"
 echo "  Compatible models: Johnson et al. fast-neural-style format"
+
+# ── TensorRT (optional, for turbo mode) ──
+echo ""
+echo "[bonus] TensorRT check..."
+if [ "$IS_JETSON" = true ]; then
+    if python3 -c "import tensorrt; print(f'TensorRT {tensorrt.__version__} ✓')" 2>/dev/null; then
+        echo "  TensorRT found"
+        # Install torch-tensorrt if not present
+        if python3 -c "import torch_tensorrt" 2>/dev/null; then
+            echo "  torch-tensorrt found ✓"
+        else
+            echo "  Installing torch-tensorrt for turbo mode..."
+            pip3 install torch-tensorrt 2>/dev/null || \
+                echo "  ⚠ torch-tensorrt install failed — turbo mode will use FP16 fallback"
+        fi
+    else
+        echo "  TensorRT not found — turbo mode will use torch.compile or FP16"
+        echo "  For best performance, install from JetPack SDK"
+    fi
+else
+    echo "  (TensorRT only available on Jetson — skipping)"
+fi
+
+# ── Jetson power mode optimization ──
+if [ "$IS_JETSON" = true ]; then
+    echo ""
+    echo "[turbo] Jetson power optimization..."
+    echo "  For maximum 720p@30fps performance:"
+    echo "    sudo nvpmodel -m 0              # MAX performance mode"
+    echo "    sudo jetson_clocks               # Lock clocks to max"
+    echo "    sudo jetson_clocks --fan          # Max fan speed"
+    echo ""
+    echo "  Check current mode: nvpmodel -q"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════"
@@ -89,6 +124,11 @@ echo "    cd jetson-dream"
 echo "    python3 scripts/main.py              # with camera"
 echo "    python3 scripts/main.py --no-camera  # test pattern"
 echo "    python3 scripts/main.py -c csi -f    # Jetson CSI + fullscreen"
+echo ""
+echo "  ── TURBO MODE (720p@30fps) ──"
+echo "    python3 scripts/main.py --turbo                    # 720p auto-tuned"
+echo "    python3 scripts/main.py --turbo -c csi -f          # CSI + fullscreen"
+echo "    python3 scripts/main.py --turbo --process-res quality  # Higher detail"
 echo ""
 echo "  Connect your Launchpad MK3 via USB — it auto-detects."
 echo "═══════════════════════════════════════════════"

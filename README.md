@@ -29,11 +29,11 @@ controlled by your Launchpad's 64 RGB pads.
 
 ## AI Models
 
-| Model | Effect | Speed (480×360) |
-|---|---|---|
-| **DeepDream** (InceptionV3) | Psychedelic hallucinations — eyes, spirals, animal faces emerge from the image | 5-15 FPS |
-| **Fast Neural Style Transfer** | Painterly styles (Van Gogh, Mosaic, Candy, etc.) applied in real-time | 15-30 FPS |
-| **Blend mode** | Both engines mixed together for maximum dreaminess | 3-10 FPS |
+| Model | Effect | Speed (480×360) | Speed (720p turbo) |
+|---|---|---|---|
+| **DeepDream** (InceptionV3) | Psychedelic hallucinations — eyes, spirals, animal faces emerge from the image | 5-15 FPS | 15-30 FPS |
+| **Fast Neural Style Transfer** | Painterly styles (Van Gogh, Mosaic, Candy, etc.) applied in real-time | 15-30 FPS | 30+ FPS |
+| **Blend mode** | Both engines mixed together for maximum dreaminess | 3-10 FPS | 10-20 FPS |
 
 Lower resolutions = faster. At 320×240 you can push 15+ FPS even in Dream mode.
 
@@ -115,7 +115,37 @@ python3 scripts/main.py --no-midi
 python3 scripts/main.py --list-devices
 ```
 
-### 4. Keyboard Controls
+### 4. TURBO MODE (720p@30fps)
+
+```bash
+# Full turbo — 720p display, async pipeline, FP16/TensorRT
+python3 scripts/main.py --turbo
+
+# Turbo + CSI camera + fullscreen (performance show mode)
+python3 scripts/main.py --turbo -c csi -f
+
+# Turbo with different processing resolutions:
+python3 scripts/main.py --turbo --process-res ultra_fast  # 320×180 → max FPS
+python3 scripts/main.py --turbo --process-res fast         # 426×240 → good balance
+python3 scripts/main.py --turbo --process-res balanced     # 480×270 → default
+python3 scripts/main.py --turbo --process-res quality      # 640×360 → best detail
+python3 scripts/main.py --turbo --process-res native       # 1280×720 → no downscale
+
+# Turbo without async (synchronous but still FP16)
+python3 scripts/main.py --turbo --no-async
+```
+
+**How turbo works:**
+- Captures at 720p (1280×720)
+- Downscales to processing resolution for AI (e.g., 480×270)
+- AI engine runs at lower res (7× fewer pixels = ~7× faster)
+- Upscales back to 720p for display
+- Async pipeline decouples capture/processing/display
+- FP16 inference for ~2× GPU speedup
+- TensorRT for additional ~2× speedup (style transfer)
+- DeepDream capped at 2 octaves / 3 iterations in turbo
+
+### 5. Keyboard Controls
 
 | Key | Action |
 |---|---|
@@ -127,6 +157,7 @@ python3 scripts/main.py --list-devices
 | `Space` | Freeze frame |
 | `+` / `-` | Increase / decrease dream intensity |
 | `R` | Reset all parameters |
+| `P` | Print performance report (turbo mode) |
 | `Q` / `ESC` | Quit |
 
 ## Hardware Requirements
@@ -156,6 +187,8 @@ jetson-dream/
 │   ├── style_engine.py      # Fast Neural Style Transfer
 │   ├── video_pipeline.py    # Camera capture + display output
 │   ├── param_mapper.py      # Launchpad pads → AI parameters
+│   ├── turbo_engine.py      # TensorRT/FP16 acceleration + resolution manager
+│   ├── async_pipeline.py    # Threaded capture → process → display pipeline
 │   ├── download_styles.py   # Download pre-trained style models
 │   └── setup.sh             # Install dependencies
 ├── models/                  # Style transfer .pth files
@@ -164,17 +197,22 @@ jetson-dream/
     ├── test_midi_launchpad.py
     ├── test_param_mapper.py
     ├── test_dream_engine.py
-    └── test_video_pipeline.py
+    ├── test_video_pipeline.py
+    ├── test_turbo_engine.py
+    └── test_async_pipeline.py
 ```
 
 ## Performance Tips
 
 - **Resolution matters most**: 320×240 runs 2-3× faster than 640×480
+- **Use `--turbo`** for 720p: processes at lower res, upscales for display
 - **Reduce octaves**: 2 octaves is much faster than 4, still looks dreamy
 - **Reduce iterations**: 3-5 iterations per octave is enough for live use
 - **Style Transfer is faster** than DeepDream — use it when you need more FPS
 - **Feedback** is free (just alpha blending) and adds a lot of visual depth
-- **TensorRT**: Convert InceptionV3 to TensorRT for ~2× speedup on Jetson
+- **TensorRT**: Turbo mode auto-converts style models to TensorRT FP16 (~4× speedup)
+- **Power mode**: On Jetson, `sudo nvpmodel -m 0 && sudo jetson_clocks` for max clocks
+- **Press P** in turbo mode to see per-stage timing breakdown
 
 ## Training Custom Styles
 

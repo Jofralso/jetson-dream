@@ -102,13 +102,14 @@ class InceptionDreamModel(nn.Module):
 class DeepDreamEngine:
     """Real-time DeepDream processor for video frames."""
 
-    def __init__(self, resolution: tuple[int, int] = (640, 480)):
+    def __init__(self, resolution: tuple[int, int] = (640, 480), turbo: bool = False):
         if torch is None:
             raise RuntimeError("PyTorch is required: pip install torch torchvision")
         if cv2 is None:
             raise RuntimeError("OpenCV is required: pip install opencv-python")
 
         self.resolution = resolution
+        self.turbo = turbo
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Load model
@@ -117,6 +118,12 @@ class DeepDreamEngine:
         self.model.eval()
         for param in self.model.parameters():
             param.requires_grad_(False)
+
+        # FP16 + AMP for turbo mode
+        self._amp_enabled = turbo and torch.cuda.is_available()
+        if self._amp_enabled:
+            print("DeepDream: AMP FP16 enabled")
+
         print("DeepDream: model loaded")
 
         # Processing parameters (updated each frame from MIDI)
@@ -165,8 +172,14 @@ class DeepDreamEngine:
         """Single gradient ascent step — maximize activations at target layer."""
         tensor = tensor.detach().requires_grad_(True)
 
-        activations = self.model(tensor, self.target_layer)
-        loss = activations.norm()
+        if self._amp_enabled:
+            with torch.amp.autocast("cuda"):
+                activations = self.model(tensor, self.target_layer)
+                loss = activations.norm()
+        else:
+            activations = self.model(tensor, self.target_layer)
+            loss = activations.norm()
+
         loss.backward()
 
         grad = tensor.grad.data
@@ -227,14 +240,21 @@ class DeepDreamEngine:
             prev = cv2.resize(self._prev_frame, (w, h))
             frame = cv2.addWeighted(frame, 1 - self.feedback, prev, self.feedback, 0)
 
+        # In turbo mode, cap octaves/iterations for speed
+        octaves = self.octaves
+        iterations = self.iterations
+        if self.turbo:
+            octaves = min(octaves, 2)
+            iterations = min(iterations, 3)
+
         # Multi-octave DeepDream
         base_tensor = self._preprocess(frame)
         detail_layers = []
 
         # Build octave pyramid
         octave_shapes = []
-        for i in range(self.octaves):
-            scale = self.octave_scale ** (self.octaves - 1 - i)
+        for i in range(octaves):
+            scale = self.octave_scale ** (octaves - 1 - i)
             oh = int(h / scale)
             ow = int(w / scale)
             octave_shapes.append((oh, ow))
@@ -257,7 +277,7 @@ class DeepDreamEngine:
                     octave_tensor = octave_tensor + upscaled_detail
 
                 # Gradient ascent iterations
-                for _ in range(self.iterations):
+                for _ in range(iterations):
                     with torch.enable_grad():
                         octave_tensor, ox, oy = self._apply_jitter(octave_tensor)
                         octave_tensor = self._dream_step(octave_tensor)
@@ -317,7 +337,7 @@ class DeepDreamEngine:
 
     def get_info(self) -> dict:
         """Return current engine state for HUD overlay."""
-        return {
+        info = {
             "engine": "DeepDream",
             "layer": self.target_layer,
             "intensity": f"{self.intensity:.3f}",
@@ -326,3 +346,6 @@ class DeepDreamEngine:
             "feedback": f"{self.feedback:.2f}",
             "zoom": f"{self.zoom:.4f}",
         }
+        if self.turbo:
+            info["turbo"] = "ON (AMP)" if self._amp_enabled else "ON"
+        return info
