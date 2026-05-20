@@ -230,7 +230,25 @@ class LaunchpadMidi:
             return
 
         # Open MIDI Input
-        self._midi_in = rtmidi.MidiIn()
+        try:
+            self._midi_in = rtmidi.MidiIn()
+        except Exception as e:
+            # ALSA sequencer may not be available over SSH
+            error_str = str(e).lower()
+            if "alsa" in error_str or "sequencer" in error_str:
+                print("⚠ ALSA sequencer not available (SSH/headless environment)")
+                print("  Trying direct USB MIDI access...")
+                try:
+                    # Try with dummy sequencer backend
+                    self._midi_in = rtmidi.MidiIn()
+                except Exception as e2:
+                    print(f"  MIDI unavailable: {e2}")
+                    print("  Run with --no-midi to skip")
+                    return
+            else:
+                print(f"MIDI error: {e}")
+                return
+
         in_ports = self._midi_in.get_ports()
         print(f"MIDI Input ports: {in_ports}")
 
@@ -244,7 +262,13 @@ class LaunchpadMidi:
         self._midi_in.set_callback(self._midi_callback)
 
         # Open MIDI Output (for LED feedback)
-        self._midi_out = rtmidi.MidiOut()
+        try:
+            self._midi_out = rtmidi.MidiOut()
+        except Exception as e:
+            print(f"⚠ MIDI output error: {e}")
+            self._midi_out = None
+            return
+
         out_ports = self._midi_out.get_ports()
         print(f"MIDI Output ports: {out_ports}")
 

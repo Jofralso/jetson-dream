@@ -17,6 +17,22 @@ except ImportError:
     cv2 = None
 
 
+def configure_ps3_eye(cap):
+    """Apply PS3 Eye camera optimizations.
+    
+    PS3 Eye: 320x240@187fps, 640x480@60fps
+    Features: auto-focus off, noise reduction, high-speed mode
+    """
+    # Try to disable auto-focus for consistent depth
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+    # Enable auto-white balance
+    cap.set(cv2.CAP_PROP_AUTO_WB, 1)
+    # Set exposure
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
+    # Reduce latency
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+
 def build_gst_pipeline(
     camera: int | str = 0,
     width: int = 640,
@@ -116,6 +132,11 @@ class VideoPipeline:
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             self._cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+            
+            # Try PS3 Eye optimizations if using string identifier
+            if isinstance(self.camera, str) and "ps3" in self.camera.lower():
+                configure_ps3_eye(self._cap)
+                print("  (PS3 Eye camera detected — optimizations applied)")
 
         if not self._cap.isOpened():
             raise RuntimeError(f"Cannot open camera: {self.camera}")

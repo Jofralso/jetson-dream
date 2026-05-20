@@ -46,13 +46,33 @@ if [ "$IS_JETSON" = true ]; then
     echo "  https://forums.developer.nvidia.com/t/pytorch-for-jetson/"
     echo ""
     # Check if torch is already installed
+    TORCH_VERSION=""
     if python3 -c "import torch; print(f'PyTorch {torch.__version__} (CUDA: {torch.cuda.is_available()})')" 2>/dev/null; then
         echo "  PyTorch already installed ✓"
+        # Extract torch version for matching torchvision
+        TORCH_VERSION=$(python3 -c "import torch; print(torch.__version__.split('+')[0])" 2>/dev/null)
     else
         echo "  ⚠ PyTorch not found — install NVIDIA's Jetson wheel:"
         echo "    pip3 install torch torchvision --extra-index-url https://developer.download.nvidia.com/compute/redist/jp/v60/pytorch/"
     fi
-    pip3 install torchvision 2>/dev/null || echo "  Install torchvision from NVIDIA's Jetson wheels"
+    
+    # Install compatible torchvision
+    if [ ! -z "$TORCH_VERSION" ]; then
+        echo ""
+        echo "  Installing compatible torchvision for torch $TORCH_VERSION..."
+        # Determine torchvision version matching torch
+        case "$TORCH_VERSION" in
+            2.11*) TV_VERSION="0.26.0" ;;
+            2.12*) TV_VERSION="0.27.0" ;;
+            2.10*) TV_VERSION="0.25.0" ;;
+            *) TV_VERSION="0.27.0" ;;  # Default to latest compatible
+        esac
+        
+        echo "  Installing torchvision==$TV_VERSION (matching torch $TORCH_VERSION)..."
+        pip3 install "torchvision==$TV_VERSION" 2>/dev/null && \
+            echo "  ✓ torchvision $TV_VERSION installed" || \
+            echo "  ⚠ Try installing from NVIDIA's Jetson wheels if pip install fails"
+    fi
 else
     # Desktop — standard PyTorch
     pip3 install torch torchvision
@@ -86,18 +106,33 @@ echo ""
 echo "[bonus] TensorRT check..."
 if [ "$IS_JETSON" = true ]; then
     if python3 -c "import tensorrt; print(f'TensorRT {tensorrt.__version__} ✓')" 2>/dev/null; then
-        echo "  TensorRT found"
+        echo "  ✓ TensorRT found"
         # Install torch-tensorrt if not present
         if python3 -c "import torch_tensorrt" 2>/dev/null; then
-            echo "  torch-tensorrt found ✓"
+            echo "  ✓ torch-tensorrt found — turbo mode will use TensorRT acceleration (2×+ speedup)"
         else
             echo "  Installing torch-tensorrt for turbo mode..."
-            pip3 install torch-tensorrt 2>/dev/null || \
+            if pip3 install torch-tensorrt 2>/dev/null; then
+                echo "  ✓ torch-tensorrt installed — turbo mode ready"
+            else
                 echo "  ⚠ torch-tensorrt install failed — turbo mode will use FP16 fallback"
+                echo "    To retry: pip3 install torch-tensorrt"
+            fi
         fi
     else
-        echo "  TensorRT not found — turbo mode will use torch.compile or FP16"
-        echo "  For best performance, install from JetPack SDK"
+        echo "  ⚠ TensorRT not found — turbo mode will use torch.compile or FP16"
+        echo ""
+        echo "  To enable TensorRT acceleration for 2× style transfer speedup:"
+        echo "    1. Check if TensorRT is in JetPack SDK:"
+        echo "       ls /usr/lib/aarch64-linux-gnu/libnvinfer.so"
+        echo ""
+        echo "    2a. If found — install Python bindings:"
+        echo "        pip3 install torch-tensorrt"
+        echo ""
+        echo "    2b. If not found — install full JetPack SDK:"
+        echo "        sudo apt-get install nvidia-jetpack"
+        echo ""
+        echo "  After install, rerun: python3 -c 'import tensorrt; import torch_tensorrt'"
     fi
 else
     echo "  (TensorRT only available on Jetson — skipping)"

@@ -16,6 +16,10 @@ import argparse
 import signal
 import sys
 import time
+from pathlib import Path
+
+# Ensure parent directory is in path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import cv2
 import numpy as np
@@ -52,7 +56,7 @@ Examples:
         """,
     )
     p.add_argument("-c", "--camera", default="0",
-                   help="Camera source: device index, 'csi', or URL (default: 0)")
+                   help="Camera source: device index, 'csi', 'ps3eye', or URL (default: 0)")
     p.add_argument("-W", "--width", type=int, default=None,
                    help="Display width (default: 480, or 1280 in turbo mode)")
     p.add_argument("-H", "--height", type=int, default=None,
@@ -95,17 +99,52 @@ Examples:
     return args
 
 
+def detect_ps3_eye():
+    """Detect PS3 Eye camera by checking USB device IDs.
+    
+    PS3 Eye: Sony Corp., ID 1415:2000
+    Returns camera index or None.
+    """
+    import subprocess
+    try:
+        output = subprocess.check_output(
+            ["lsusb", "-d", "1415:2000"], stderr=subprocess.DEVNULL
+        ).decode()
+        if "1415:2000" in output:
+            # PS3 Eye found — try to match it with /dev/video*
+            for i in range(10):
+                cap = cv2.VideoCapture(i)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    # PS3 Eye supports 640x480 or 320x240
+                    if (w, h) in [(640, 480), (320, 240)]:
+                        cap.release()
+                        return i
+                    cap.release()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+    return None
+
+
 def list_devices():
     """Print available cameras and MIDI ports."""
     print("\n=== Cameras ===")
+    ps3_idx = detect_ps3_eye()
     for i in range(10):
         cap = cv2.VideoCapture(i)
         if cap.isOpened():
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            print(f"  [{i}] USB camera {w}x{h}")
+            label = f"  [{i}] USB camera {w}x{h}"
+            if i == ps3_idx:
+                label += " <- PS3 Eye detected"
+            print(label)
             cap.release()
     print("  [csi] Jetson CSI camera (if connected)")
+    print("  [ps3eye] PS3 Eye camera (if connected)")
 
     print("\n=== MIDI ===")
     lp = LaunchpadMidi()
@@ -120,6 +159,14 @@ def main():
         list_devices()
         return
 
+    # Detect SSH connection
+    import os
+    is_ssh = "SSH_CLIENT" in os.environ or "SSH_CONNECTION" in os.environ
+    if is_ssh:
+        print("⚠ SSH connection detected")
+        print("  • MIDI will use test patterns")
+        print("  • Cameras will fall back to test pattern if unavailable")
+    
     print("=" * 60)
     if args.turbo:
         print("  jetson-dream — TURBO MODE (720p@30fps)")
@@ -131,6 +178,15 @@ def main():
     camera = args.camera
     if camera.isdigit():
         camera = int(camera)
+    elif camera.lower() == "ps3eye":
+        # Auto-detect PS3 Eye
+        ps3_idx = detect_ps3_eye()
+        if ps3_idx is not None:
+            camera = ps3_idx
+            print(f"PS3 Eye auto-detected: camera index {ps3_idx}")
+        else:
+            print("⚠ PS3 Eye not found via lsusb, trying index 0")
+            camera = 0
 
     # ── Resolution manager (turbo mode) ──
     res_manager = None
@@ -172,18 +228,24 @@ def main():
     launchpad = None
     mapper = None
     if not args.no_midi:
-        launchpad = LaunchpadMidi(port_name=args.midi_port)
-        launchpad.start()
-        mapper = ParamMapper(launchpad=launchpad)
+        try:
+            launchpad = LaunchpadMidi(port_name=args.midi_port)
+            launchpad.start()
+            mapper = ParamMapper(launchpad=launchpad)
 
-        # Set starting mode
-        if args.mode == "style":
-            mapper.mode = MODE_STYLE
-        elif args.mode == "blend":
-            mapper.mode = MODE_BLEND
+            # Set starting mode
+            if args.mode == "style":
+                mapper.mode = MODE_STYLE
+            elif args.mode == "blend":
+                mapper.mode = MODE_BLEND
 
-        # Light up the pad grid
-        mapper.update_leds()
+            # Light up the pad grid
+            mapper.update_leds()
+        except Exception as e:
+            print(f"  MIDI initialization failed: {e}")
+            print("  Continuing without MIDI (keyboard only)")
+            launchpad = None
+            mapper = ParamMapper()
     else:
         mapper = ParamMapper()
         print("  MIDI disabled — keyboard only")
@@ -217,10 +279,24 @@ def main():
             )
         video._running = True
     else:
-        video.start()
+        try:
+            video.start()
+        except RuntimeError as e:
+            print(f"\n⚠ Camera unavailable: {e}")
+            if "SSH" in str(e) or "SSH_CLIENT" in str(e) or "no camera" in str(e).lower():
+                print("  Falling back to test pattern mode...")
+                args.no_camera = True
+                cv2.namedWindow(video.window_name, cv2.WINDOW_AUTOSIZE)
+                if args.fullscreen:
+                    cv2.setWindowProperty(
+                        video.window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN
+                    )
+                video._running = True
+            else:
+                raise
 
         # Start async pipeline in turbo mode
-        if args.turbo and not args.no_async:
+        if args.turbo and not args.no_async and not args.no_camera:
             async_pipeline = AsyncPipeline(
                 cap=video._cap,
                 process_fn=make_process_fn(),

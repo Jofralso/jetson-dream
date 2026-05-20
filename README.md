@@ -96,6 +96,12 @@ python3 scripts/download_styles.py
 # USB camera + auto-detect Launchpad
 python3 scripts/main.py
 
+# PS3 Eye camera (auto-detected)
+python3 scripts/main.py -c ps3eye
+
+# PS3 Eye + turbo mode
+python3 scripts/main.py --turbo -c ps3eye -f
+
 # Jetson CSI camera + fullscreen (for projector)
 python3 scripts/main.py -c csi -f
 
@@ -111,7 +117,7 @@ python3 scripts/main.py --mode style
 # Without MIDI (keyboard only)
 python3 scripts/main.py --no-midi
 
-# List devices
+# List all cameras and MIDI ports
 python3 scripts/main.py --list-devices
 ```
 
@@ -160,12 +166,99 @@ python3 scripts/main.py --turbo --no-async
 | `P` | Print performance report (turbo mode) |
 | `Q` / `ESC` | Quit |
 
+## TensorRT Setup (Optional but Recommended)
+
+TensorRT provides ~2× speedup for style transfer in turbo mode. It ships with JetPack SDK but needs explicit setup.
+
+### Check if TensorRT is installed
+
+```bash
+python3 -c "import tensorrt; print(f'TensorRT {tensorrt.__version__}')" 
+ls /usr/lib/aarch64-linux-gnu/libnvinfer.so  # Should exist on Jetson
+```
+
+### Install TensorRT on Jetson
+
+**If you installed JetPack SDK:**
+```bash
+# TensorRT is already in your JetPack installation
+# Just need to install torch-tensorrt Python bindings
+pip3 install torch-tensorrt
+```
+
+**If TensorRT is missing** (need JetPack SDK):
+```bash
+# Option 1: Reinstall/upgrade JetPack SDK (recommended for full support)
+sudo apt-get update
+sudo apt-get install nvidia-jetpack
+```
+
+Or install just the TensorRT libraries:
+```bash
+# Option 2: Minimal TensorRT install
+sudo apt-get install libnvinfer8 libnvinfer-dev
+pip3 install torch-tensorrt
+```
+
+After installation, verify:
+```bash
+python3 -c "import tensorrt; import torch_tensorrt; print('✓ TensorRT ready')"
+```
+
+### Without TensorRT
+
+Turbo mode gracefully falls back to:
+- **FP16 inference** (still ~2× faster than FP32) via `torch.cuda.amp`
+- **torch.compile** (graph optimization) if available
+- Standard PyTorch execution
+
+Performance impact: ~2-4× slower than with TensorRT, but still usable at lower resolutions.
+
 ## Hardware Requirements
 
 - **Jetson Orin Nano Super 8GB** (or any Jetson with CUDA)
 - **Novation Launchpad MK3** (USB, auto-detected)
-- **USB camera** or **Jetson CSI camera**
+- **Camera** — one of:
+  - **USB camera** (standard UVC, auto-detected)
+  - **PS3 Eye** (320×240@187fps, 640×480@60fps)
+  - **Jetson CSI camera** (onboard, via GStreamer)
 - **Display** (HDMI/DP) or projector
+
+### PS3 Eye Setup
+
+The PS3 Eye is an excellent choice for real-time AI processing:
+- **Wide 75° FOV** — captures more of the scene
+- **Dual microphones** — spatial audio capture  
+- **High frame rate** — 320×240@187fps, 640×480@60fps
+- **Low latency** — minimal delay for live effects
+
+**Connect PS3 Eye:**
+
+```bash
+# Plug in via USB
+# Check detection
+lsusb | grep 1415:2000  # Should show Sony Corp. PlayStation Eye
+
+# Should output: Bus 00X Device 00Y: ID 1415:2000 Sony Corp.
+```
+
+**Run with PS3 Eye:**
+
+```bash
+# Auto-detect PS3 Eye camera
+python3 scripts/main.py -c ps3eye
+
+# Or manually specify by index
+python3 scripts/main.py -c 0  # Replace 0 with camera index from --list-devices
+
+# PS3 Eye + turbo mode (720p display from lower-res processing)
+python3 scripts/main.py --turbo -c ps3eye -f
+```
+
+**Performance notes:**
+- At 320×240: Can achieve 30+ FPS even in blend mode
+- At 640×480: Use turbo mode with `--process-res balanced` for smooth playback
+- Wide FOV: Slight barrel distortion at screen edges (normal for wide-angle optics)
 
 ## Dependencies
 
