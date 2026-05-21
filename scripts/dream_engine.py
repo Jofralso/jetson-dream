@@ -138,6 +138,11 @@ class DeepDreamEngine:
         self.hue_shift = 0.0          # Color rotation [0-1]
         self.blur_amount = 0.0        # Post-blur [0-1]
 
+        # Frame skip: only run full dream every N frames, reuse previous result
+        self.frame_skip = 0           # 0 = process every frame, 2 = process every 3rd
+        self._frame_counter = 0
+        self._skip_result = None      # cached result for skipped frames
+
         # State
         self._prev_frame = None       # Previous output for feedback loop
 
@@ -230,6 +235,14 @@ class DeepDreamEngine:
         Returns:
             Dreamed BGR uint8 frame.
         """
+        # Frame skip: reuse previous result for skipped frames
+        if self.frame_skip > 0:
+            self._frame_counter += 1
+            if self._frame_counter % (self.frame_skip + 1) != 0:
+                if self._skip_result is not None:
+                    return self._skip_result
+                # First frame, no cached result yet — fall through to process
+
         h, w = frame.shape[:2]
 
         # Apply zoom to input
@@ -312,6 +325,41 @@ class DeepDreamEngine:
             result = cv2.GaussianBlur(result, (ksize, ksize), 0)
 
         self._prev_frame = result.copy()
+        self._skip_result = result
+        return result
+
+    def process_frame_fast(self, frame: np.ndarray) -> np.ndarray:
+        """Ultra-fast single-pass dream: 1 octave, 1 iteration, no pyramid.
+
+        ~3-5x faster than full process_frame. Good for Jetson Nano where
+        even turbo mode is too slow. Produces a lighter dream effect.
+        """
+        h, w = frame.shape[:2]
+        frame = self._apply_zoom(frame)
+
+        if self._prev_frame is not None and self.feedback > 0:
+            prev = cv2.resize(self._prev_frame, (w, h))
+            frame = cv2.addWeighted(frame, 1 - self.feedback, prev, self.feedback, 0)
+
+        tensor = self._preprocess(frame)
+
+        # Single gradient ascent step — no octave pyramid
+        with torch.enable_grad():
+            if self.jitter > 0:
+                tensor, ox, oy = self._apply_jitter(tensor)
+            tensor = self._dream_step(tensor)
+            if self.jitter > 0:
+                tensor = self._undo_jitter(tensor, ox, oy)
+
+        result = self._postprocess(tensor)
+        result = self._apply_hue_shift(result)
+
+        if self.blur_amount > 0.01:
+            ksize = int(self.blur_amount * 15) * 2 + 1
+            result = cv2.GaussianBlur(result, (ksize, ksize), 0)
+
+        self._prev_frame = result.copy()
+        self._skip_result = result
         return result
 
     def update_params(self, params: dict):
@@ -334,6 +382,8 @@ class DeepDreamEngine:
             self.hue_shift = float(params["hue_shift"])
         if "blur_amount" in params:
             self.blur_amount = float(np.clip(params["blur_amount"], 0, 1))
+        if "frame_skip" in params:
+            self.frame_skip = max(0, int(params["frame_skip"]))
 
     def get_info(self) -> dict:
         """Return current engine state for HUD overlay."""

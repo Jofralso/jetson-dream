@@ -238,6 +238,8 @@ class ProcessingResolutionManager:
 
     # Preset processing resolutions (height, width)
     PROCESS_PRESETS = {
+        "nano":       (96, 160),     # 160×96  — Jetson Nano maximum FPS
+        "nano_fast":  (120, 213),    # 213×120 — Jetson Nano balanced
         "ultra_fast": (180, 320),    # 320×180 — very fast, chunky dream
         "fast":       (240, 426),    # 426×240 — good balance
         "balanced":   (270, 480),    # 480×270 — nice detail

@@ -1,0 +1,73 @@
+# ═══════════════════════════════════════════════════════════════
+# Jetson-Dream: Docker Compose
+# ═══════════════════════════════════════════════════════════════
+# Profiles:
+#   docker compose --profile desktop up       # Desktop/Server (CUDA)
+#   docker compose --profile jetson up        # Jetson Nano/Orin
+#   docker compose --profile test up          # Run tests only
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  # Desktop/Server with NVIDIA GPU
+  # ─────────────────────────────────────────────────────────────
+  dream-desktop:
+    profiles: ["desktop"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    devices:
+      - /dev/video0:/dev/video0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/app/models
+      - ./styles:/app/styles
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    restart: unless-stopped
+    command: ["--stream", "--process-res", "medium"]
+
+  # ─────────────────────────────────────────────────────────────
+  # Jetson Nano / Orin Nano
+  # ─────────────────────────────────────────────────────────────
+  dream-jetson:
+    profiles: ["jetson"]
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+    runtime: nvidia
+    devices:
+      - /dev/video0:/dev/video0
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/app/models
+      - ./styles:/app/styles
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    restart: unless-stopped
+    command: ["--nano", "--stream"]
+
+  # ─────────────────────────────────────────────────────────────
+  # Test runner
+  # ─────────────────────────────────────────────────────────────
+  test:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
+    command: >
+      bash -c "pip install -q pytest pytest-cov numpy &&
+               python -m pytest tests/ -v --tb=short"

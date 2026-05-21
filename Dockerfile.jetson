@@ -1,0 +1,55 @@
+# ═══════════════════════════════════════════════════════════════
+# Jetson-Dream: NVIDIA Jetson Nano / Orin Dockerfile
+# ═══════════════════════════════════════════════════════════════
+# Uses NVIDIA L4T PyTorch base image (includes CUDA, cuDNN, PyTorch).
+#
+# Build:
+#   docker build -f Dockerfile.jetson -t jetson-dream:nano .
+#
+# Run (with camera and display):
+#   docker run --runtime nvidia --device /dev/video0 \
+#     --env DISPLAY=$DISPLAY \
+#     --volume /tmp/.X11-unix:/tmp/.X11-unix \
+#     --volume $(pwd)/models:/app/models \
+#     -p 8080:8080 \
+#     jetson-dream:nano --nano
+# ═══════════════════════════════════════════════════════════════
+
+# L4T PyTorch image (JetPack 5.x for Nano/Orin)
+# Use r35.x for JetPack 5, r36.x for JetPack 6
+FROM nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+# Additional system deps not in L4T base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-opencv \
+    libv4l-dev v4l-utils \
+    libasound2-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Python packages (torch already in base)
+RUN pip3 install --no-cache-dir \
+    numpy>=1.21 \
+    python-rtmidi>=1.5 \
+    flask>=2.3
+
+# Application code
+COPY scripts/ scripts/
+COPY demo_image.py .
+
+# Download style models
+RUN python3 -m scripts.download_styles -o models --subset core
+
+# Copy any pre-existing models
+COPY models/ models/
+
+# Ports: MJPEG stream
+EXPOSE 8080
+
+# Use --nano flag by default on Jetson
+ENTRYPOINT ["python3", "-m", "scripts.main"]
+CMD ["--nano", "--stream"]

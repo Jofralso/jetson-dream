@@ -1,0 +1,36 @@
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Output
+demo_output/*.jpg
+demo_output/*.png
+
+# Large model files (downloaded at build time)
+models/*.pth
+models/*.onnx
+models/*.engine
+
+# Git
+.git/
+.gitignore

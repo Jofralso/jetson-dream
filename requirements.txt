@@ -1,0 +1,11 @@
+# Runtime dependencies
+numpy>=1.21
+opencv-python>=4.5
+torch>=2.0
+torchvision>=0.15
+
+# Optional - MIDI controller
+python-rtmidi>=1.5
+
+# Optional - streaming
+flask>=2.3

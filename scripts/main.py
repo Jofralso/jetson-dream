@@ -53,6 +53,12 @@ Examples:
   python main.py --turbo -c csi -f         # 720p turbo on CSI + fullscreen
   python main.py --turbo --process-res quality  # Higher quality processing
   python main.py --turbo --process-res ultra_fast  # Maximum FPS
+
+  # ── NANO MODE (Jetson Nano optimized) ──
+  python main.py --nano                    # 160x96 proc, single-pass, skip frames
+  python main.py --nano --process-res nano_fast  # Slightly better quality
+  python main.py --nano --frame-skip 2     # Process every 3rd frame (~18+ effective FPS)
+  python main.py --nano -c csi -f          # Nano + CSI camera + fullscreen
         """,
     )
     p.add_argument("-c", "--camera", default="0",
@@ -83,18 +89,47 @@ Examples:
     turbo.add_argument("--turbo", action="store_true",
                        help="Enable turbo mode: 720p display, async pipeline, FP16/TRT")
     turbo.add_argument("--process-res", default="balanced",
-                       choices=["ultra_fast", "fast", "balanced", "quality", "native"],
+                       choices=["nano", "nano_fast", "ultra_fast", "fast", "balanced", "quality", "native"],
                        help="AI processing resolution preset (default: balanced)")
     turbo.add_argument("--no-async", action="store_true",
                        help="Disable threaded pipeline (turbo still uses FP16)")
+    turbo.add_argument("--nano", action="store_true",
+                       help="Jetson Nano optimized: tiny resolution, single-pass dream, frame skip")
+    turbo.add_argument("--frame-skip", type=int, default=None,
+                       help="Process every Nth frame, reuse result (0=off, 1=every 2nd, 2=every 3rd)")
+
+    # Lightweight engine options
+    lite = p.add_argument_group("lightweight engines")
+    lite.add_argument("--lite", action="store_true",
+                      help="Use MobileNetV2 DeepDream (3.4M params, ~5x faster)")
+    lite.add_argument("--micro-style", action="store_true",
+                      help="Use MicroTransformNet style transfer (0.4M params, ~2-3x faster)")
 
     args = p.parse_args()
 
+    # --nano implies turbo + nano resolution + aggressive settings
+    if args.nano:
+        args.turbo = True
+        if args.process_res == "balanced":
+            args.process_res = "nano"
+        if args.frame_skip is None:
+            args.frame_skip = 1  # process every other frame
+
     # Set default resolution based on turbo mode
     if args.width is None:
-        args.width = 1280 if args.turbo else 480
+        if args.nano:
+            args.width = 640
+        elif args.turbo:
+            args.width = 1280
+        else:
+            args.width = 480
     if args.height is None:
-        args.height = 720 if args.turbo else 360
+        if args.nano:
+            args.height = 480
+        elif args.turbo:
+            args.height = 720
+        else:
+            args.height = 360
 
     return args
 
@@ -168,7 +203,9 @@ def main():
         print("  • Cameras will fall back to test pattern if unavailable")
     
     print("=" * 60)
-    if args.turbo:
+    if args.nano:
+        print("  jetson-dream — NANO MODE (max FPS on Jetson Nano)")
+    elif args.turbo:
         print("  jetson-dream — TURBO MODE (720p@30fps)")
     else:
         print("  jetson-dream — Live AI Video Dreaming")
@@ -213,14 +250,36 @@ def main():
     )
 
     print("[2/4] DeepDream engine...")
-    dream = DeepDreamEngine(resolution=(proc_w, proc_h), turbo=args.turbo)
+    if args.lite:
+        from scripts.lite_dream_engine import LiteDreamEngine
+        dream = LiteDreamEngine(resolution=(proc_w, proc_h))
+    else:
+        dream = DeepDreamEngine(resolution=(proc_w, proc_h), turbo=args.turbo)
+
+    # Apply nano/frame-skip settings
+    if args.frame_skip is not None:
+        dream.frame_skip = args.frame_skip
+    if args.nano:
+        # Aggressive settings for Jetson Nano
+        dream.octaves = 1
+        dream.iterations = 1
+        dream.jitter = 8
+        dream.layer_index = 3  # Shallower layer = faster
+        print(f"  Nano mode: 1 octave, 1 iter, frame_skip={dream.frame_skip}")
 
     print("[3/4] Style Transfer engine...")
-    style = StyleTransferEngine(
-        models_dir=args.models_dir,
-        resolution=(proc_w, proc_h),
-        turbo=args.turbo,
-    )
+    if args.micro_style:
+        from scripts.micro_style_engine import MicroStyleEngine
+        style = MicroStyleEngine(
+            models_dir=str(Path(args.models_dir) / "micro"),
+            resolution=(proc_w, proc_h),
+        )
+    else:
+        style = StyleTransferEngine(
+            models_dir=args.models_dir,
+            resolution=(proc_w, proc_h),
+            turbo=args.turbo,
+        )
     # Try to load the first available style
     style.select_style_by_index(0)
 
@@ -251,16 +310,23 @@ def main():
         print("  MIDI disabled — keyboard only")
 
     # ── Build process function for async pipeline ──
+    use_fast_dream = args.nano
+
     def make_process_fn():
         """Create a closure that processes frames through current engine."""
         def process_fn(frame):
             mode = mapper.mode
             if mode == MODE_DREAM:
+                if use_fast_dream:
+                    return dream.process_frame_fast(frame)
                 return dream.process_frame(frame)
             elif mode == MODE_STYLE:
                 return style.process_frame(frame)
             elif mode == MODE_BLEND:
-                dreamed = dream.process_frame(frame)
+                if use_fast_dream:
+                    dreamed = dream.process_frame_fast(frame)
+                else:
+                    dreamed = dream.process_frame(frame)
                 styled = style.process_frame(frame)
                 blend = mapper.params.get("style_blend", 0.5)
                 return cv2.addWeighted(dreamed, 1 - blend, styled, blend, 0)
@@ -422,11 +488,17 @@ def main():
             mode = mapper.mode
 
             if mode == MODE_DREAM:
-                output = dream.process_frame(proc_frame)
+                if use_fast_dream:
+                    output = dream.process_frame_fast(proc_frame)
+                else:
+                    output = dream.process_frame(proc_frame)
             elif mode == MODE_STYLE:
                 output = style.process_frame(proc_frame)
             elif mode == MODE_BLEND:
-                dreamed = dream.process_frame(proc_frame)
+                if use_fast_dream:
+                    dreamed = dream.process_frame_fast(proc_frame)
+                else:
+                    dreamed = dream.process_frame(proc_frame)
                 styled = style.process_frame(proc_frame)
                 blend = mapper.params.get("style_blend", 0.5)
                 output = cv2.addWeighted(dreamed, 1 - blend, styled, blend, 0)
